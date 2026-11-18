@@ -8,7 +8,9 @@
  * @format
  */
 
+const {CHECK_NAME_PREFIX} = require('./approval');
 const {summarize} = require('./compare');
+const {baselineImageKey, publicUrl} = require('./storage');
 
 // GitHub limits check run output text to 65535 characters and 50 images.
 const MAX_TEXT_LENGTH = 60000;
@@ -218,4 +220,52 @@ function renderPullRequestComment({platforms, headSha, gateSummary}) {
   return lines.join('\n');
 }
 
-module.exports = {COMMENT_MARKER, renderCheckOutput, renderPullRequestComment};
+/**
+ * The check run for one platform of a stored report (`results.json` under
+ * `prefix`), and the URLs of its images. Differences fail the check unless
+ * `approver` approved them, so an approved PR has no failing visual checks.
+ */
+function platformCheckRun({platform, prefix, publicBaseUrl, approver}) {
+  const expectedById = new Map(
+    platform.results
+      .filter(result => result.expected != null)
+      .map(result => [result.id, result.expected]),
+  );
+  const imageUrl = (kind, id) =>
+    kind === 'expected'
+      ? publicUrl(
+          publicBaseUrl,
+          baselineImageKey(
+            {environmentKey: platform.environmentKey, ...platform.baseline},
+            expectedById.get(id),
+          ),
+        )
+      : publicUrl(
+          publicBaseUrl,
+          `${prefix}/${platform.platform}/${kind}/${id}.png`,
+        );
+  const output = renderCheckOutput({...platform, imageUrl});
+  let conclusion = 'success';
+  if (platform.error != null) {
+    conclusion = 'neutral';
+  } else if (summarize(platform.results).hasDifferences) {
+    if (approver == null) {
+      conclusion = 'failure';
+    } else {
+      output.title = `${output.title}, approved by @${approver}`;
+    }
+  }
+  return {
+    name: `${CHECK_NAME_PREFIX} (${platform.platform})`,
+    conclusion,
+    output,
+    imageUrl,
+  };
+}
+
+module.exports = {
+  COMMENT_MARKER,
+  platformCheckRun,
+  renderCheckOutput,
+  renderPullRequestComment,
+};

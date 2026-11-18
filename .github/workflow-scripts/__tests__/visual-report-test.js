@@ -15,6 +15,7 @@ const {
 } = require('../visual/approval');
 const {
   COMMENT_MARKER,
+  platformCheckRun,
   renderCheckOutput,
   renderPullRequestComment,
 } = require('../visual/report');
@@ -120,17 +121,32 @@ describe('visual reports and approval', () => {
     });
 
     test.each([
-      [null, false, null, 'success', false],
-      ['f', false, null, 'failure', false],
-      ['f', true, {fingerprint: 'f', approver: 'x'}, 'success', false],
-      ['f', true, {fingerprint: 'g', approver: 'x'}, 'failure', true],
-      ['f', true, null, 'failure', true],
+      [null, false, null, 'success', false, undefined],
+      ['f', false, null, 'failure', false, undefined],
+      ['f', true, {fingerprint: 'f', approver: 'x'}, 'success', false, 'x'],
+      [
+        'f',
+        true,
+        {fingerprint: 'g', approver: 'x'},
+        'failure',
+        true,
+        undefined,
+      ],
+      ['f', true, null, 'failure', true, undefined],
     ])(
       'gate for fingerprint %s, label %s, approval %j',
-      (fingerprint, labelPresent, approval, conclusion, staleLabel) => {
+      (
+        fingerprint,
+        labelPresent,
+        approval,
+        conclusion,
+        staleLabel,
+        approver,
+      ) => {
         const decision = gateDecision({fingerprint, labelPresent, approval});
         expect(decision.conclusion).toBe(conclusion);
         expect(decision.staleLabel ?? false).toBe(staleLabel);
+        expect(decision.approver).toBe(approver);
         if (conclusion === 'failure' && !staleLabel) {
           expect(decision.summary).toContain(APPROVAL_LABEL);
         }
@@ -261,6 +277,86 @@ describe('visual reports and approval', () => {
           image_url: 'https://cdn.example/diff/a/b/changed.png',
         }),
       ]);
+    });
+  });
+
+  describe('platformCheckRun', () => {
+    const blob = 'b'.repeat(64);
+    const platform = (results, error = null) => ({
+      platform: 'ios',
+      environmentKey: 'ios-x-0123abcd',
+      baseline: {sha: SHA_B, distance: 0, imageStore: 'blobs'},
+      results,
+      error,
+    });
+    const changed = {
+      id: 'a/b/changed',
+      status: 'changed',
+      diffPixels: 3,
+      diffRatio: 0.03,
+      expected: {sha256: blob},
+      captured: {},
+      hasDiffImage: true,
+    };
+
+    test.each([
+      [
+        'fails unapproved differences',
+        [changed],
+        null,
+        null,
+        'failure',
+        'ios: 1 visual difference(s)',
+      ],
+      [
+        'passes approved differences',
+        [changed],
+        null,
+        'alice',
+        'success',
+        'ios: 1 visual difference(s), approved by @alice',
+      ],
+      [
+        'passes without differences',
+        [{id: 'a/b/same', status: 'unchanged'}],
+        null,
+        'alice',
+        'success',
+        'ios: no visual differences',
+      ],
+      [
+        'is neutral without a comparison',
+        [],
+        {title: 'no capture', summary: ''},
+        'alice',
+        'neutral',
+        'ios: no capture',
+      ],
+    ])('%s', (_, results, error, approver, conclusion, title) => {
+      const check = platformCheckRun({
+        platform: platform(results, error),
+        prefix: 'reports/pull/1/x/2-1',
+        publicBaseUrl: 'https://cdn.example',
+        approver,
+      });
+      expect(check.name).toBe('Visual regression (ios)');
+      expect(check.conclusion).toBe(conclusion);
+      expect(check.output.title).toBe(title);
+    });
+
+    test('links baseline blobs and report images', () => {
+      const {imageUrl} = platformCheckRun({
+        platform: platform([changed]),
+        prefix: 'reports/pull/1/x/2-1',
+        publicBaseUrl: 'https://cdn.example',
+        approver: null,
+      });
+      expect(imageUrl('expected', 'a/b/changed')).toBe(
+        `https://cdn.example/blobs/${blob}.png`,
+      );
+      expect(imageUrl('diff', 'a/b/changed')).toBe(
+        'https://cdn.example/reports/pull/1/x/2-1/ios/diff/a/b/changed.png',
+      );
     });
   });
 });

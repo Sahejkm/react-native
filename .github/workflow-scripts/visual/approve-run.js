@@ -10,13 +10,15 @@
 
 /**
  * Records a maintainer's approval of a PR's visual differences and updates
- * the approval gate. Runs from the default branch on `pull_request_target`
+ * the approval gate and the platform checks, which pass once differences are
+ * approved. Runs from the default branch on `pull_request_target`
  * when the approval label is added or removed. It never checks out or runs
  * pull request code.
  *
  *   node approve-run.js prepare  Decide, and stage an approval record to
  *                                upload under OUT_DIR.
- *   node approve-run.js report   After the upload, update the gate check.
+ *   node approve-run.js report   After the upload, update the gate and
+ *                                platform checks.
  */
 
 const {
@@ -26,6 +28,7 @@ const {
   gateDecision,
 } = require('./approval');
 const {createGitHubClient} = require('./github');
+const {platformCheckRun} = require('./report');
 const {
   approvalKey,
   fetchJsonOrNull,
@@ -43,7 +46,10 @@ function requireEnv(name) {
   return value;
 }
 
-/** The results of the most recent comparison for a PR head, or null. */
+/**
+ * The most recent comparison for a PR head, as its storage prefix and
+ * results, or null.
+ */
 async function latestResults({bucket, publicBaseUrl, prNumber, headSha}) {
   const runs = await listPrefixes(
     bucket,
@@ -58,9 +64,15 @@ async function latestResults({bucket, publicBaseUrl, prNumber, headSha}) {
     })
     .filter(Boolean)
     .sort((a, b) => b.runId - a.runId || b.attempt - a.attempt)[0];
-  return latest == null
+  if (latest == null) {
+    return null;
+  }
+  const results = await fetchJsonOrNull(
+    publicUrl(publicBaseUrl, `${latest.prefix}results.json`),
+  );
+  return results == null
     ? null
-    : fetchJsonOrNull(publicUrl(publicBaseUrl, `${latest.prefix}results.json`));
+    : {prefix: latest.prefix.replace(/\/$/, ''), results};
 }
 
 async function prepare() {
@@ -83,12 +95,13 @@ async function prepare() {
 
   const prNumber = event.pull_request.number;
   const headSha = event.pull_request.head.sha;
-  const results = await latestResults({
+  const latest = await latestResults({
     bucket: requireEnv('VISUAL_BUCKET'),
     publicBaseUrl: requireEnv('VISUAL_PUBLIC_BASE_URL'),
     prNumber,
     headSha,
   });
+  const results = latest?.results ?? null;
   const fingerprint = results?.fingerprint ?? null;
 
   if (event.action === 'labeled') {
@@ -131,6 +144,7 @@ async function prepare() {
     headSha,
     fingerprint,
     labelPresent: event.action === 'labeled',
+    reportPrefix: latest?.prefix ?? null,
   });
 }
 
@@ -143,17 +157,34 @@ async function report() {
   if (state == null) {
     return;
   }
-  const {prNumber, headSha, fingerprint, labelPresent} = state;
+  const {prNumber, headSha, fingerprint, labelPresent, reportPrefix} = state;
+  const publicBaseUrl = requireEnv('VISUAL_PUBLIC_BASE_URL');
   const approval =
     fingerprint == null
       ? null
       : await fetchJsonOrNull(
-          publicUrl(
-            requireEnv('VISUAL_PUBLIC_BASE_URL'),
-            approvalKey(prNumber, fingerprint),
-          ),
+          publicUrl(publicBaseUrl, approvalKey(prNumber, fingerprint)),
         );
   const decision = gateDecision({fingerprint, labelPresent, approval});
+  if (reportPrefix != null) {
+    const detailsUrl = publicUrl(publicBaseUrl, `${reportPrefix}/results.json`);
+    const results = await fetchJsonOrNull(detailsUrl);
+    for (const platform of results?.platforms ?? []) {
+      const {name, conclusion, output} = platformCheckRun({
+        platform,
+        prefix: reportPrefix,
+        publicBaseUrl,
+        approver: decision.approver,
+      });
+      await github.createCheckRun({
+        name,
+        headSha,
+        conclusion,
+        output,
+        detailsUrl,
+      });
+    }
+  }
   await github.createCheckRun({
     name: GATE_CHECK_NAME,
     headSha,
@@ -180,4 +211,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = {latestResults};
+module.exports = {latestResults, report};

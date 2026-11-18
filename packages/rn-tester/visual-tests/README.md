@@ -56,7 +56,7 @@ Use `com.facebook.react.uiapp` as the `APP_ID` on Android. Local screenshots are
 Open the PR comment or the check run and compare the expected, captured and diff images.
 
 - If the change is unintended, fix it and push.
-- If it's intended, a maintainer applies the `visual-change-approved` label. The approval covers the exact set of differences in the report: if a later push changes them, the label is removed and the PR needs a new review. The baseline itself only changes once the PR lands and `main` is captured again.
+- If it's intended, a maintainer applies the `visual-change-approved` label, and the platform checks and the approval gate then pass. The approval covers the exact set of differences in the report: if a later push changes them, the label is removed and the PR needs a new review. The baseline itself only changes once the PR lands and `main` is captured again.
 
 ## Tolerances
 

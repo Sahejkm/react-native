@@ -20,7 +20,6 @@
 
 const {
   APPROVAL_LABEL,
-  CHECK_NAME_PREFIX,
   GATE_CHECK_NAME,
   differenceFingerprint,
   gateDecision,
@@ -29,7 +28,7 @@ const {compareCapture, summarize} = require('./compare');
 const {createGitHubClient} = require('./github');
 const {
   COMMENT_MARKER,
-  renderCheckOutput,
+  platformCheckRun,
   renderPullRequestComment,
 } = require('./report');
 const {
@@ -380,38 +379,40 @@ async function report() {
   const {context, reportPrefix: prefix, fingerprint} = state;
   const detailsUrl = publicUrl(publicBaseUrl, `${prefix}/results.json`);
 
+  // Approval is decided first so that approved differences don't fail the
+  // platform checks.
+  let decision = null;
+  if (context.kind === 'pull') {
+    const labels = await github.labels(context.prNumber);
+    const approval =
+      fingerprint == null
+        ? null
+        : await fetchJsonOrNull(
+            publicUrl(
+              publicBaseUrl,
+              approvalKey(context.prNumber, fingerprint),
+            ),
+          );
+    decision = gateDecision({
+      fingerprint,
+      labelPresent: labels.includes(APPROVAL_LABEL),
+      approval,
+    });
+  }
+
   const summaryLines = [];
   const commentPlatforms = [];
   for (const platform of state.platforms) {
-    const expectedById = new Map(
-      platform.results
-        .filter(result => result.expected != null)
-        .map(result => [result.id, result.expected]),
-    );
-    const imageUrl = (kind, id) =>
-      kind === 'expected'
-        ? publicUrl(
-            publicBaseUrl,
-            baselineImageKey(
-              {environmentKey: platform.environmentKey, ...platform.baseline},
-              expectedById.get(id),
-            ),
-          )
-        : publicUrl(
-            publicBaseUrl,
-            `${prefix}/${platform.platform}/${kind}/${id}.png`,
-          );
-    const output = renderCheckOutput({...platform, imageUrl});
-    const {hasDifferences} = summarize(platform.results);
+    const {name, conclusion, output, imageUrl} = platformCheckRun({
+      platform,
+      prefix,
+      publicBaseUrl,
+      approver: decision?.approver,
+    });
     const checkRun = await github.createCheckRun({
-      name: `${CHECK_NAME_PREFIX} (${platform.platform})`,
+      name,
       headSha: context.headSha,
-      conclusion:
-        platform.error != null
-          ? 'neutral'
-          : hasDifferences
-            ? 'failure'
-            : 'success',
+      conclusion,
       output,
       detailsUrl,
     });
@@ -426,22 +427,7 @@ async function report() {
     );
   }
 
-  if (context.kind === 'pull') {
-    const labels = await github.labels(context.prNumber);
-    const approval =
-      fingerprint == null
-        ? null
-        : await fetchJsonOrNull(
-            publicUrl(
-              publicBaseUrl,
-              approvalKey(context.prNumber, fingerprint),
-            ),
-          );
-    const decision = gateDecision({
-      fingerprint,
-      labelPresent: labels.includes(APPROVAL_LABEL),
-      approval,
-    });
+  if (decision != null) {
     if (decision.staleLabel) {
       await github.removeLabel(context.prNumber, APPROVAL_LABEL);
       await github.comment(

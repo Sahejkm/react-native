@@ -60,6 +60,7 @@ function gateDecision({fingerprint, labelPresent, approval}) {
     return {
       conclusion: 'success',
       summary: `Visual differences approved by @${approval.approver}.`,
+      approver: approval.approver,
     };
   }
   if (labelPresent) {
